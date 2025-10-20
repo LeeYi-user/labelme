@@ -1543,7 +1543,32 @@ class MainWindow(QtWidgets.QMainWindow):
         flags = {}
         group_id = None
         description = ""
-        if self._config["display_label_popup"] or not text:
+        
+        # Check if this is a point inside a bbox with auto-assigned group_id
+        # The shape has already been added to canvas.shapes by finalise()
+        current_shape = self.canvas.shapes[-1] if self.canvas.shapes else None
+        auto_label = None
+        if current_shape and current_shape.shape_type == "point" and current_shape.group_id is not None:
+            # Check if there's a containing bbox
+            containing_bbox = current_shape.other_data.get("containing_bbox")
+            if containing_bbox is not None:
+                # Count existing points with the same group_id (excluding the current one)
+                points_in_group = [
+                    s for s in self.canvas.shapes[:-1]  # Exclude current shape
+                    if s.shape_type == "point" and s.group_id == current_shape.group_id
+                ]
+                # Auto-assign label based on count
+                if len(points_in_group) == 0:  # This is the first point
+                    auto_label = "head"
+                elif len(points_in_group) == 1:  # This is the second point
+                    auto_label = "tail"
+                
+                # Use the auto-assigned label and skip the popup
+                if auto_label:
+                    text = auto_label
+                    group_id = current_shape.group_id
+        
+        if not auto_label and (self._config["display_label_popup"] or not text):
             previous_text = self.labelDialog.edit.text()
             text, flags, group_id, description = self.labelDialog.popUp(text)
             if not text:
@@ -1560,7 +1585,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if text:
             self.labelList.clearSelection()
             shape = self.canvas.setLastLabel(text, flags)
-            shape.group_id = group_id
+            if group_id is None and current_shape and current_shape.group_id is not None:
+                # Use the pre-assigned group_id from canvas
+                shape.group_id = current_shape.group_id
+            else:
+                shape.group_id = group_id
             shape.description = description
             self.addLabel(shape)
             self.actions.editMode.setEnabled(True)

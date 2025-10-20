@@ -520,6 +520,23 @@ class Canvas(QtWidgets.QWidget):
                         else self.createMode
                     )
                     self.current.addPoint(pos, label=0 if is_shift_pressed else 1)
+                    
+                    # Check if point is inside a rectangle bbox and auto-assign group_id
+                    if self.createMode == "point":
+                        containing_bbox = self._find_containing_bbox(pos)
+                        if containing_bbox is not None:
+                            # Use the bbox's group_id, or assign the latest group_id if bbox doesn't have one
+                            if containing_bbox.group_id is not None:
+                                self.current.group_id = containing_bbox.group_id
+                            else:
+                                # Assign a new group_id to both the bbox and the point
+                                max_group_id = self._get_max_group_id()
+                                new_group_id = max_group_id + 1
+                                containing_bbox.group_id = new_group_id
+                                self.current.group_id = new_group_id
+                            # Store the bbox reference for later label assignment
+                            self.current.other_data["containing_bbox"] = containing_bbox
+                    
                     if self.createMode == "point":
                         self.finalise()
                     elif (
@@ -664,6 +681,28 @@ class Canvas(QtWidgets.QWidget):
                     self.calculateOffsets(point)
                     return
         self.deSelectShape()
+
+    def _find_containing_bbox(self, point):
+        """Find a rectangle shape that contains the given point.
+        
+        Returns the shape if found, None otherwise.
+        """
+        for shape in reversed(self.shapes):
+            if (
+                self.isVisible(shape)
+                and shape.shape_type == "rectangle"
+                and shape.containsPoint(point)
+            ):
+                return shape
+        return None
+
+    def _get_max_group_id(self):
+        """Get the maximum group_id currently used in all shapes, or 1 if none exist."""
+        max_id = 0
+        for shape in self.shapes:
+            if shape.group_id is not None and isinstance(shape.group_id, int):
+                max_id = max(max_id, shape.group_id)
+        return max_id if max_id > 0 else 1
 
     def calculateOffsets(self, point: QPointF) -> None:
         left = self.pixmap.width() - 1
