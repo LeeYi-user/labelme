@@ -534,8 +534,8 @@ class Canvas(QtWidgets.QWidget):
                                 new_group_id = max_group_id + 1
                                 containing_bbox.group_id = new_group_id
                                 self.current.group_id = new_group_id
-                            # Store the bbox reference for later label assignment
-                            self.current.other_data["containing_bbox"] = containing_bbox
+                            # 只存 group_id，避免 JSON 序列化錯誤
+                            self.current.other_data["containing_bbox_group_id"] = containing_bbox.group_id
                     
                     if self.createMode == "point":
                         self.finalise()

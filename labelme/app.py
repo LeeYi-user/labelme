@@ -1549,9 +1549,9 @@ class MainWindow(QtWidgets.QMainWindow):
         current_shape = self.canvas.shapes[-1] if self.canvas.shapes else None
         auto_label = None
         if current_shape and current_shape.shape_type == "point" and current_shape.group_id is not None:
-            # Check if there's a containing bbox
-            containing_bbox = current_shape.other_data.get("containing_bbox")
-            if containing_bbox is not None:
+            # 只用 group_id 判斷，不用物件參考
+            containing_bbox_group_id = current_shape.other_data.get("containing_bbox_group_id")
+            if containing_bbox_group_id is not None:
                 # Count existing points with the same group_id (excluding the current one)
                 points_in_group = [
                     s for s in self.canvas.shapes[:-1]  # Exclude current shape
@@ -1562,7 +1562,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     auto_label = "head"
                 elif len(points_in_group) == 1:  # This is the second point
                     auto_label = "tail"
-                
                 # Use the auto-assigned label and skip the popup
                 if auto_label:
                     text = auto_label
