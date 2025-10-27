@@ -1557,11 +1557,12 @@ class MainWindow(QtWidgets.QMainWindow):
                     s for s in self.canvas.shapes[:-1]  # Exclude current shape
                     if s.shape_type == "point" and s.group_id == current_shape.group_id
                 ]
-                # Auto-assign label based on count
+                # Auto-assign label based on count and toggle state
+                is_reversed = self.canvas.is_point_order_reversed()
                 if len(points_in_group) == 0:  # This is the first point
-                    auto_label = "head"
+                    auto_label = "tail" if is_reversed else "head"
                 elif len(points_in_group) == 1:  # This is the second point
-                    auto_label = "tail"
+                    auto_label = "head" if is_reversed else "tail"
                 # Use the auto-assigned label and skip the popup
                 if auto_label:
                     text = auto_label

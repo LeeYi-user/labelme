@@ -122,6 +122,8 @@ class Canvas(QtWidgets.QWidget):
         # Set widget options.
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.WheelFocus)
+        # Point creation order: False = head first, True = tail first
+        self._point_order_reversed = False
 
     def fillDrawing(self):
         return self._fill_drawing
@@ -160,6 +162,10 @@ class Canvas(QtWidgets.QWidget):
 
         self._ai_model_cache = model_type()
         return self._ai_model_cache
+
+    def is_point_order_reversed(self) -> bool:
+        """Check if the point creation order is reversed (tail first instead of head first)."""
+        return self._point_order_reversed
 
     def storeShapes(self):
         shapesBackup = []
@@ -1003,6 +1009,20 @@ class Canvas(QtWidgets.QWidget):
     def keyPressEvent(self, ev):
         modifiers = ev.modifiers()
         key = ev.key()
+        
+        # Toggle point order with spacebar in CREATE mode when not actively drawing
+        if (
+            key == QtCore.Qt.Key_Space
+            and self.mode == self.CREATE
+            and self.current is None
+        ):
+            self._point_order_reversed = not self._point_order_reversed
+            logger.info(
+                f"Point creation order toggled: {'tail→head' if self._point_order_reversed else 'head→tail'}"
+            )
+            self._update_status()
+            return
+        
         if self.drawing():
             if key == Qt.Key_Escape and self.current:
                 self.current = None
