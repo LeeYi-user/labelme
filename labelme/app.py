@@ -191,6 +191,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.zoomWidget = ZoomWidget()
         self.setAcceptDrops(True)
 
+        # Initialize dual mode variables
+        self._dual_mode = False
+        self._left_images = []
+        self._right_images = []
+        self._left_group_id_counter = 0
+        self._right_group_id_counter = 0
+
+        # Create left canvas
         self.canvas = Canvas(
             epsilon=self._config["epsilon"],
             double_click=self._config["canvas"]["double_click"],
@@ -201,6 +209,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.mouseMoved.connect(self._update_status_stats)
         self.canvas.statusUpdated.connect(lambda text: self.status_left.setText(text))
 
+        # Create right canvas
+        self.canvas_right = Canvas(
+            epsilon=self._config["epsilon"],
+            double_click=self._config["canvas"]["double_click"],
+            num_backups=self._config["canvas"]["num_backups"],
+            crosshair=self._config["canvas"]["crosshair"],
+        )
+        self.canvas_right.zoomRequest.connect(self._zoom_requested_right)
+        self.canvas_right.mouseMoved.connect(self._update_status_stats_right)
+        self.canvas_right.statusUpdated.connect(lambda text: self.status_left.setText(text))
+
+        # Create scroll areas for both canvases
         scrollArea = QtWidgets.QScrollArea()
         scrollArea.setWidget(self.canvas)
         scrollArea.setWidgetResizable(True)
@@ -210,12 +230,38 @@ class MainWindow(QtWidgets.QMainWindow):
         }
         self.canvas.scrollRequest.connect(self.scrollRequest)
 
+        scrollArea_right = QtWidgets.QScrollArea()
+        scrollArea_right.setWidget(self.canvas_right)
+        scrollArea_right.setWidgetResizable(True)
+        self.scrollBars_right = {
+            Qt.Vertical: scrollArea_right.verticalScrollBar(),
+            Qt.Horizontal: scrollArea_right.horizontalScrollBar(),
+        }
+        self.canvas_right.scrollRequest.connect(self.scrollRequest_right)
+
+        # Connect signals for left canvas
         self.canvas.newShape.connect(self.newShape)
         self.canvas.shapeMoved.connect(self.setDirty)
         self.canvas.selectionChanged.connect(self.shapeSelectionChanged)
         self.canvas.drawingPolygon.connect(self.toggleDrawingSensitive)
 
-        self.setCentralWidget(scrollArea)
+        # Connect signals for right canvas
+        self.canvas_right.newShape.connect(self.newShape_right)
+        self.canvas_right.shapeMoved.connect(self.setDirty)
+        self.canvas_right.selectionChanged.connect(self.shapeSelectionChanged_right)
+        self.canvas_right.drawingPolygon.connect(self.toggleDrawingSensitive)
+
+        # Create splitter for dual canvas layout
+        self.canvas_splitter = QtWidgets.QSplitter(Qt.Horizontal)
+        self.canvas_splitter.addWidget(scrollArea)
+        self.canvas_splitter.addWidget(scrollArea_right)
+        self.canvas_splitter.setStretchFactor(0, 1)
+        self.canvas_splitter.setStretchFactor(1, 1)
+        
+        # Hide right canvas by default
+        scrollArea_right.setVisible(False)
+
+        self.setCentralWidget(self.canvas_splitter)
 
         features = QtWidgets.QDockWidget.DockWidgetFeatures()
         for dock in ["flag_dock", "label_dock", "shape_dock", "file_dock"]:
@@ -825,6 +871,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 action("&Move here", self.moveShape),
             ),
         )
+        
+        # Custom context menu for the right canvas widget:
+        utils.addActions(self.canvas_right.menus[0], self.context_menu_actions)
+        utils.addActions(
+            self.canvas_right.menus[1],
+            (
+                action("&Copy here", self.copyShape),
+                action("&Move here", self.moveShape),
+            ),
+        )
 
         selectAiModel = QtWidgets.QWidgetAction(self)
         selectAiModel.setDefaultWidget(QtWidgets.QWidget())
@@ -938,6 +994,10 @@ class MainWindow(QtWidgets.QMainWindow):
             Qt.Horizontal: {},
             Qt.Vertical: {},
         }  # key=filename, value=scroll_value
+        self.scroll_values_right = {  # type: ignore[var-annotated]
+            Qt.Horizontal: {},
+            Qt.Vertical: {},
+        }  # key=filename, value=scroll_value for right canvas
 
         if config["file_search"]:
             self.fileSearch.setText(config["file_search"])
@@ -969,7 +1029,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.updateFileMenu()
 
         # Callbacks:
-        self.zoomWidget.valueChanged.connect(self._paint_canvas)
+        self.zoomWidget.valueChanged.connect(self._paint_canvases)
 
         self.populateModeActions()
 
@@ -987,6 +1047,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def populateModeActions(self):
         self.canvas.menus[0].clear()
         utils.addActions(self.canvas.menus[0], self.context_menu_actions)
+        
+        # Also update right canvas menu
+        self.canvas_right.menus[0].clear()
+        utils.addActions(self.canvas_right.menus[0], self.context_menu_actions)
+        
         self.menus.edit.clear()
         actions = (
             *[draw_action for _, draw_action in self.draw_actions],
@@ -1000,11 +1065,25 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.imagePath:
             window_title = f"{window_title} - {self.imagePath}"
             if self.imageList:
-                window_title = (
-                    f"{window_title} "
-                    f"[{self.imageList.index(self.imagePath) + 1}"
-                    f"/{len(self.imageList)}]"
-                )
+                # In dual mode, use current row index instead of searching in imageList
+                if self._dual_mode:
+                    current_row = self.fileListWidget.currentRow()
+                    if current_row >= 0:
+                        window_title = (
+                            f"{window_title} "
+                            f"[{current_row + 1}"
+                            f"/{len(self.imageList)}]"
+                        )
+                else:
+                    try:
+                        window_title = (
+                            f"{window_title} "
+                            f"[{self.imageList.index(self.imagePath) + 1}"
+                            f"/{len(self.imageList)}]"
+                        )
+                    except ValueError:
+                        # If imagePath not in imageList, just skip the index
+                        pass
         if dirty:
             window_title = f"{window_title}*"
         return window_title
@@ -1125,6 +1204,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.labelFile = None
         self._other_data = None
         self.canvas.resetState()
+        if self._dual_mode:
+            self.canvas_right.resetState()
 
     def currentItem(self):
         items = self.labelList.selectedItems()
@@ -1167,6 +1248,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.setEditing(edit)
         if createMode is not None:
             self.canvas.createMode = createMode
+        
+        # Also update right canvas in dual mode
+        if self._dual_mode:
+            self.canvas_right.setEditing(edit)
+            if createMode is not None:
+                self.canvas_right.createMode = createMode
+        
         if edit:
             for _, draw_action in self.draw_actions:
                 draw_action.setEnabled(True)
@@ -1314,11 +1402,19 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._can_continue():
             return
 
-        currIndex = self.imageList.index(str(item.text()))
-        if currIndex < len(self.imageList):
-            filename = self.imageList[currIndex]
-            if filename:
-                self._load_file(filename)
+        if self._dual_mode:
+            # In dual mode, use the row index to load paired images
+            currIndex = self.fileListWidget.currentRow()
+            if currIndex < len(self._left_images):
+                filename = self._left_images[currIndex]
+                if filename:
+                    self._load_file(filename)
+        else:
+            currIndex = self.imageList.index(str(item.text()))
+            if currIndex < len(self.imageList):
+                filename = self.imageList[currIndex]
+                if filename:
+                    self._load_file(filename)
 
     # React to canvas signals.
     def shapeSelectionChanged(self, selected_shapes):
@@ -1332,6 +1428,29 @@ class MainWindow(QtWidgets.QMainWindow):
             item = self.labelList.findItemByShape(shape)
             self.labelList.selectItem(item)
             self.labelList.scrollToItem(item)
+        self.labelList.itemSelectionChanged.connect(self._label_selection_changed)
+        n_selected = len(selected_shapes)
+        self.actions.delete.setEnabled(n_selected)
+        self.actions.duplicate.setEnabled(n_selected)
+        self.actions.copy.setEnabled(n_selected)
+        self.actions.edit.setEnabled(n_selected)
+
+    def shapeSelectionChanged_right(self, selected_shapes):
+        self.labelList.itemSelectionChanged.disconnect(self._label_selection_changed)
+        for shape in self.canvas_right.selectedShapes:
+            shape.selected = False
+        self.labelList.clearSelection()
+        self.canvas_right.selectedShapes = selected_shapes
+        for shape in self.canvas_right.selectedShapes:
+            shape.selected = True
+            try:
+                item = self.labelList.findItemByShape(shape)
+                self.labelList.selectItem(item)
+                self.labelList.scrollToItem(item)
+            except ValueError:
+                # Shape not found in labelList, skip selection
+                logger.debug("Shape not found in labelList for right canvas")
+                pass
         self.labelList.itemSelectionChanged.connect(self._label_selection_changed)
         n_selected = len(selected_shapes)
         self.actions.delete.setEnabled(n_selected)
@@ -1406,14 +1525,29 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def remLabels(self, shapes):
         for shape in shapes:
-            item = self.labelList.findItemByShape(shape)
-            self.labelList.removeItem(item)
+            try:
+                item = self.labelList.findItemByShape(shape)
+                self.labelList.removeItem(item)
+            except ValueError:
+                # Shape not found in labelList, might be from right canvas
+                # Try to find and remove by matching properties
+                logger.debug(f"Shape not found in labelList: {shape}")
+                for item in self.labelList:
+                    item_shape = item.shape()
+                    if (item_shape.label == shape.label and 
+                        item_shape.group_id == shape.group_id and
+                        len(item_shape.points) == len(shape.points)):
+                        self.labelList.removeItem(item)
+                        break
 
     def _load_shapes(self, shapes: list[Shape], replace: bool = True) -> None:
         self.labelList.itemSelectionChanged.disconnect(self._label_selection_changed)
         shape: Shape
         for shape in shapes:
             self.addLabel(shape)
+            # Update left group_id counter in dual mode
+            if self._dual_mode and shape.group_id and shape.group_id > self._left_group_id_counter:
+                self._left_group_id_counter = shape.group_id
         self.labelList.clearSelection()
         self.labelList.itemSelectionChanged.connect(self._label_selection_changed)
         self.canvas.loadShapes(shapes=shapes, replace=replace)
@@ -1457,6 +1591,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.flag_widget.addItem(item)  # type: ignore[union-attr]
 
     def saveLabels(self, filename):
+        if self._dual_mode:
+            return self.saveLabels_dual(filename)
+        
         lf = LabelFile()
 
         def format_shape(s):
@@ -1515,6 +1652,83 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return False
 
+    def saveLabels_dual(self, filename):
+        """Save labels for both left and right images in dual mode."""
+        def format_shape(s):
+            data = s.other_data.copy()
+            data.update(
+                dict(
+                    label=s.label,
+                    points=[(p.x(), p.y()) for p in s.points],
+                    group_id=s.group_id,
+                    description=s.description,
+                    shape_type=s.shape_type,
+                    flags=s.flags,
+                    mask=None
+                    if s.mask is None
+                    else utils.img_arr_to_b64(s.mask.astype(np.uint8)),
+                )
+            )
+            return data
+
+        flags = {}
+        for i in range(self.flag_widget.count()):  # type: ignore[union-attr]
+            item = self.flag_widget.item(i)  # type: ignore[union-attr]
+            assert item
+            key = item.text()
+            flag = item.checkState() == Qt.Checked
+            flags[key] = flag
+        
+        try:
+            # Save left image labels
+            lf_left = LabelFile()
+            shapes_left = [format_shape(s) for s in self.canvas.shapes]
+            assert self.imagePath
+            imagePath_left = osp.relpath(self.imagePath, osp.dirname(filename))
+            imageData_left = self.imageData if self._config["store_data"] else None
+            if osp.dirname(filename) and not osp.exists(osp.dirname(filename)):
+                os.makedirs(osp.dirname(filename))
+            lf_left.save(
+                filename=filename,
+                shapes=shapes_left,
+                imagePath=imagePath_left,
+                imageData=imageData_left,
+                imageHeight=self.image.height(),
+                imageWidth=self.image.width(),
+                otherData=self._other_data,
+                flags=flags,
+            )
+            
+            # Save right image labels
+            if hasattr(self, 'filename_right') and self.filename_right:
+                lf_right = LabelFile()
+                shapes_right = [format_shape(s) for s in self.canvas_right.shapes]
+                filename_right = f"{osp.splitext(self.filename_right)[0]}.json"
+                if self.output_dir:
+                    filename_right = osp.join(self.output_dir, osp.basename(filename_right))
+                imagePath_right = osp.relpath(self.filename_right, osp.dirname(filename_right))
+                imageData_right = LabelFile.load_image_file(self.filename_right) if self._config["store_data"] else None
+                if osp.dirname(filename_right) and not osp.exists(osp.dirname(filename_right)):
+                    os.makedirs(osp.dirname(filename_right))
+                lf_right.save(
+                    filename=filename_right,
+                    shapes=shapes_right,
+                    imagePath=imagePath_right,
+                    imageData=imageData_right,
+                    imageHeight=self.image_right.height(),
+                    imageWidth=self.image_right.width(),
+                    otherData=None,
+                    flags=flags,
+                )
+            
+            self.labelFile = lf_left
+            return True
+        except LabelFileError as e:
+            self.errorMessage(
+                self.tr("Error saving label data"), self.tr("<b>%s</b>") % e
+            )
+            return False
+
     def duplicateSelectedShape(self):
         self.copySelectedShape()
         self.pasteSelectedShape()
@@ -1562,7 +1776,13 @@ class MainWindow(QtWidgets.QMainWindow):
         flags = {}
         group_id = None
         description = ""
-        if self._config["display_label_popup"] or not text:
+        
+        # Auto-assign label and group_id for dual mode
+        if self._dual_mode:
+            text = "shrimp"
+            self._left_group_id_counter += 1
+            group_id = self._left_group_id_counter
+        elif self._config["display_label_popup"] or not text:
             previous_text = self.labelDialog.edit.text()
             text, flags, group_id, description = self.labelDialog.popUp(text)
             if not text:
@@ -1590,6 +1810,49 @@ class MainWindow(QtWidgets.QMainWindow):
             self.canvas.undoLastLine()
             self.canvas.shapesBackups.pop()
 
+    def newShape_right(self):
+        """Pop-up and give focus to the label editor for right canvas."""
+        items = self.uniqLabelList.selectedItems()
+        text = None
+        if items:
+            text = items[0].data(Qt.UserRole)
+        flags = {}
+        group_id = None
+        description = ""
+        
+        # Auto-assign label and group_id for dual mode
+        if self._dual_mode:
+            text = "shrimp"
+            self._right_group_id_counter += 1
+            group_id = self._right_group_id_counter
+        elif self._config["display_label_popup"] or not text:
+            previous_text = self.labelDialog.edit.text()
+            text, flags, group_id, description = self.labelDialog.popUp(text)
+            if not text:
+                self.labelDialog.edit.setText(previous_text)
+
+        if text and not self.validateLabel(text):
+            self.errorMessage(
+                self.tr("Invalid label"),
+                self.tr("Invalid label '{}' with validation type '{}'").format(
+                    text, self._config["validate_label"]
+                ),
+            )
+            text = ""
+        if text:
+            self.labelList.clearSelection()
+            shape = self.canvas_right.setLastLabel(text, flags)
+            shape.group_id = group_id
+            shape.description = description
+            self.addLabel(shape)
+            self.actions.editMode.setEnabled(True)
+            self.actions.undoLastPoint.setEnabled(False)
+            self.actions.undo.setEnabled(True)
+            self.setDirty()
+        else:
+            self.canvas_right.undoLastLine()
+            self.canvas_right.shapesBackups.pop()
+
     def scrollRequest(self, delta, orientation):
         units = -delta * 0.1  # natural scroll
         bar = self.scrollBars[orientation]
@@ -1599,6 +1862,17 @@ class MainWindow(QtWidgets.QMainWindow):
     def setScroll(self, orientation, value):
         self.scrollBars[orientation].setValue(int(value))
         self.scroll_values[orientation][self.filename] = value
+
+    def scrollRequest_right(self, delta, orientation):
+        units = -delta * 0.1  # natural scroll
+        bar = self.scrollBars_right[orientation]
+        value = bar.value() + bar.singleStep() * units
+        self.setScroll_right(orientation, value)
+
+    def setScroll_right(self, orientation, value):
+        self.scrollBars_right[orientation].setValue(int(value))
+        if hasattr(self, 'filename_right') and self.filename_right:
+            self.scroll_values_right[orientation][self.filename_right] = value
 
     def _set_zoom(self, value: int) -> None:
         if self.filename is None:
@@ -1636,6 +1910,26 @@ class MainWindow(QtWidgets.QMainWindow):
             self.setScroll(
                 Qt.Vertical,
                 self.scrollBars[Qt.Vertical].value() + y_shift,
+            )
+
+    def _zoom_requested_right(self, delta: int, pos: QtCore.QPoint) -> None:
+        canvas_width_old: int = self.canvas_right.width()
+        self._add_zoom(increment=1.1 if delta > 0 else 0.9)
+
+        canvas_width_new: int = self.canvas_right.width()
+        if canvas_width_old != canvas_width_new:
+            canvas_scale_factor = canvas_width_new / canvas_width_old
+
+            x_shift = round(pos.x() * canvas_scale_factor) - pos.x()
+            y_shift = round(pos.y() * canvas_scale_factor) - pos.y()
+
+            self.setScroll_right(
+                Qt.Horizontal,
+                self.scrollBars_right[Qt.Horizontal].value() + x_shift,
+            )
+            self.setScroll_right(
+                Qt.Vertical,
+                self.scrollBars_right[Qt.Vertical].value() + y_shift,
             )
 
     def setFitWindow(self, value=True):
@@ -1702,6 +1996,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _load_file(self, filename=None):
         """Load the specified file, or the last opened file if None."""
+        # In dual mode, filename is the left image path
+        if self._dual_mode:
+            return self._load_file_dual(filename)
+        
         # changing fileListWidget loads file
         if filename in self.imageList and (
             self.fileListWidget.currentRow() != self.imageList.index(filename)
@@ -1814,6 +2112,154 @@ class MainWindow(QtWidgets.QMainWindow):
         logger.debug("loaded file: {!r}", filename)
         return True
 
+    def _load_file_dual(self, filename=None):
+        """Load paired left and right images in dual mode."""
+        if filename is None:
+            return False
+        
+        # Get current index
+        current_row = self.fileListWidget.currentRow()
+        if current_row < 0 or current_row >= len(self._left_images):
+            return False
+        
+        filename_left = self._left_images[current_row]
+        filename_right = self._right_images[current_row] if current_row < len(self._right_images) else None
+        
+        if not filename_right:
+            logger.warning("No matching right image for index {:d}", current_row)
+            return False
+        
+        # Reset counters for new image pair
+        self._left_group_id_counter = 0
+        self._right_group_id_counter = 0
+        
+        self.resetState()
+        self.canvas.setEnabled(False)
+        self.canvas_right.setEnabled(False)
+        
+        # Show right canvas
+        self.canvas_splitter.widget(1).setVisible(True)
+        
+        # Load left image
+        if not QtCore.QFile.exists(filename_left):
+            self.errorMessage(
+                self.tr("Error opening file"),
+                self.tr("No such file: <b>%s</b>") % filename_left,
+            )
+            return False
+        
+        self.show_status_message(self.tr("Loading %s...") % osp.basename(str(filename_left)))
+        
+        # Load left image data
+        label_file_left = f"{osp.splitext(filename_left)[0]}.json"
+        if self.output_dir:
+            label_file_without_path = osp.basename(label_file_left)
+            label_file_left = osp.join(self.output_dir, label_file_without_path)
+        
+        if QtCore.QFile.exists(label_file_left) and LabelFile.is_label_file(label_file_left):
+            try:
+                self.labelFile = LabelFile(label_file_left)
+                self.imageData = self.labelFile.imageData
+                self.imagePath = osp.join(osp.dirname(label_file_left), self.labelFile.imagePath)
+                self._other_data = self.labelFile.otherData
+            except LabelFileError as e:
+                logger.warning("Error loading label file: {!r}", e)
+                self.imageData = LabelFile.load_image_file(filename_left)
+                self.imagePath = filename_left
+                self.labelFile = None
+        else:
+            self.imageData = LabelFile.load_image_file(filename_left)
+            self.imagePath = filename_left
+            self.labelFile = None
+        
+        image_left = QtGui.QImage.fromData(self.imageData)
+        if image_left.isNull():
+            self.errorMessage(self.tr("Error opening file"), self.tr("Invalid image: %s") % filename_left)
+            return False
+        
+        # Load right image data
+        imageData_right = LabelFile.load_image_file(filename_right)
+        if not imageData_right:
+            self.errorMessage(self.tr("Error opening file"), self.tr("Cannot load: %s") % filename_right)
+            return False
+        
+        label_file_right = f"{osp.splitext(filename_right)[0]}.json"
+        if self.output_dir:
+            label_file_without_path = osp.basename(label_file_right)
+            label_file_right = osp.join(self.output_dir, label_file_without_path)
+        
+        labelFile_right = None
+        if QtCore.QFile.exists(label_file_right) and LabelFile.is_label_file(label_file_right):
+            try:
+                labelFile_right = LabelFile(label_file_right)
+            except LabelFileError:
+                pass
+        
+        image_right = QtGui.QImage.fromData(imageData_right)
+        if image_right.isNull():
+            self.errorMessage(self.tr("Error opening file"), self.tr("Invalid image: %s") % filename_right)
+            return False
+        
+        # Set images
+        self.image = image_left
+        self.filename = filename_left
+        self.filename_right = filename_right
+        self.image_right = image_right
+        
+        # Load pixmaps
+        self.canvas.loadPixmap(QtGui.QPixmap.fromImage(image_left))
+        self.canvas_right.loadPixmap(QtGui.QPixmap.fromImage(image_right))
+        
+        # Load shapes for left image
+        flags = {k: False for k in self._config["flags"] or []}
+        if self.labelFile:
+            self._load_shape_dicts(shape_dicts=self.labelFile.shapes)
+            if self.labelFile.flags is not None:
+                flags.update(self.labelFile.flags)
+        self._load_flags(flags=flags)
+        
+        # Load shapes for right image
+        if labelFile_right:
+            for shape_dict in labelFile_right.shapes:
+                shape = Shape(label=shape_dict["label"], shape_type=shape_dict.get("shape_type", "polygon"))
+                for x, y in shape_dict["points"]:
+                    shape.addPoint(QtCore.QPointF(x, y))
+                shape.close()
+                if "group_id" in shape_dict:
+                    shape.group_id = shape_dict["group_id"]
+                    # Update counter to avoid conflicts
+                    if shape.group_id and shape.group_id > self._right_group_id_counter:
+                        self._right_group_id_counter = shape.group_id
+                if "description" in shape_dict:
+                    shape.description = shape_dict["description"]
+                if "flags" in shape_dict:
+                    shape.flags = shape_dict["flags"]
+                self.canvas_right.shapes.append(shape)
+                # Add to labelList so it's visible
+                self.addLabel(shape)
+        
+        self.setClean()
+        self.canvas.setEnabled(True)
+        self.canvas_right.setEnabled(True)
+        
+        # Set zoom values
+        is_initial_load = not self._zoom_values
+        if self.filename in self._zoom_values:
+            self._zoom_mode = self._zoom_values[self.filename][0]
+            self._set_zoom(self._zoom_values[self.filename][1])
+        elif is_initial_load or not self._config["keep_prev_scale"]:
+            self._adjust_scale(initial=True)
+        
+        self._paint_canvas()
+        self._paint_canvas_right()
+        self.addRecentFile(self.filename)
+        self.toggleActions(True)
+        self.canvas.setFocus()
+        self.show_status_message(self.tr("Loaded %s (left) and %s (right)") % 
+                                 (osp.basename(filename_left), osp.basename(filename_right)))
+        logger.debug("loaded dual files: {!r} and {!r}", filename_left, filename_right)
+        return True
+
     def resizeEvent(self, event):
         if (
             self.canvas
@@ -1830,6 +2276,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.scale = 0.01 * self.zoomWidget.value()
         self.canvas.adjustSize()
         self.canvas.update()
+
+    def _paint_canvas_right(self) -> None:
+        if not hasattr(self, 'image_right') or self.image_right.isNull():
+            logger.warning("right image is null, cannot paint right canvas")
+            return
+        self.canvas_right.scale = 0.01 * self.zoomWidget.value()
+        self.canvas_right.adjustSize()
+        self.canvas_right.update()
+
+    def _paint_canvases(self) -> None:
+        """Paint both canvases (used when zoom widget changes)."""
+        self._paint_canvas()
+        if self._dual_mode:
+            self._paint_canvas_right()
 
     def _adjust_scale(self, initial: bool = False) -> None:
         if self.filename is None:
@@ -2127,17 +2587,43 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def deleteSelectedShape(self):
         yes, no = QtWidgets.QMessageBox.Yes, QtWidgets.QMessageBox.No
-        msg = self.tr(
-            "You are about to permanently delete {} polygons, proceed anyway?"
-        ).format(len(self.canvas.selectedShapes))
-        if yes == QtWidgets.QMessageBox.warning(
-            self, self.tr("Attention"), msg, yes | no, yes
-        ):
-            self.remLabels(self.canvas.deleteSelected())
-            self.setDirty()
-            if self.noShapes():
-                for action in self.on_shapes_present_actions:
-                    action.setEnabled(False)
+        
+        # In dual mode, delete from the appropriate canvas
+        if self._dual_mode:
+            # Check which canvas has selected shapes
+            if self.canvas.selectedShapes:
+                shapes_to_delete = self.canvas.selectedShapes
+                msg = self.tr(
+                    "You are about to permanently delete {} polygons from LEFT image, proceed anyway?"
+                ).format(len(shapes_to_delete))
+                if yes == QtWidgets.QMessageBox.warning(
+                    self, self.tr("Attention"), msg, yes | no, yes
+                ):
+                    self.remLabels(self.canvas.deleteSelected())
+                    self.setDirty()
+            elif self.canvas_right.selectedShapes:
+                shapes_to_delete = self.canvas_right.selectedShapes
+                msg = self.tr(
+                    "You are about to permanently delete {} polygons from RIGHT image, proceed anyway?"
+                ).format(len(shapes_to_delete))
+                if yes == QtWidgets.QMessageBox.warning(
+                    self, self.tr("Attention"), msg, yes | no, yes
+                ):
+                    self.remLabels(self.canvas_right.deleteSelected())
+                    self.setDirty()
+        else:
+            msg = self.tr(
+                "You are about to permanently delete {} polygons, proceed anyway?"
+            ).format(len(self.canvas.selectedShapes))
+            if yes == QtWidgets.QMessageBox.warning(
+                self, self.tr("Attention"), msg, yes | no, yes
+            ):
+                self.remLabels(self.canvas.deleteSelected())
+                self.setDirty()
+        
+        if self.noShapes():
+            for action in self.on_shapes_present_actions:
+                action.setEnabled(False)
 
     def copyShape(self):
         self.canvas.endMove(copy=True)
@@ -2222,24 +2708,61 @@ class MainWindow(QtWidgets.QMainWindow):
         self.filename = None
         self.fileListWidget.clear()
 
-        filenames = _scan_image_files(root_dir=root_dir)
-        if pattern:
-            try:
-                filenames = [f for f in filenames if re.search(pattern, f)]
-            except re.error:
-                pass
-        for filename in filenames:
-            label_file = f"{osp.splitext(filename)[0]}.json"
-            if self.output_dir:
-                label_file_without_path = osp.basename(label_file)
-                label_file = osp.join(self.output_dir, label_file_without_path)
-            item = QtWidgets.QListWidgetItem(filename)
-            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-            if QtCore.QFile.exists(label_file) and LabelFile.is_label_file(label_file):
-                item.setCheckState(Qt.Checked)
-            else:
-                item.setCheckState(Qt.Unchecked)
-            self.fileListWidget.addItem(item)
+        result = _scan_image_files(root_dir=root_dir)
+        
+        # Check if we have dual mode (left/right folders)
+        if isinstance(result, tuple):
+            left_images, right_images = result
+            self._dual_mode = True
+            self._left_images = left_images
+            self._right_images = right_images
+            
+            # Use the minimum count to ensure pairs
+            filenames = left_images[:min(len(left_images), len(right_images))]
+            
+            if pattern:
+                try:
+                    filenames = [f for f in filenames if re.search(pattern, f)]
+                except re.error:
+                    pass
+            
+            for idx, filename in enumerate(filenames):
+                label_file = f"{osp.splitext(filename)[0]}.json"
+                if self.output_dir:
+                    label_file_without_path = osp.basename(label_file)
+                    label_file = osp.join(self.output_dir, label_file_without_path)
+                item = QtWidgets.QListWidgetItem(osp.basename(filename))
+                item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                if QtCore.QFile.exists(label_file) and LabelFile.is_label_file(label_file):
+                    item.setCheckState(Qt.Checked)
+                else:
+                    item.setCheckState(Qt.Unchecked)
+                self.fileListWidget.addItem(item)
+        else:
+            # Standard mode
+            self._dual_mode = False
+            self._left_images = []
+            self._right_images = []
+            filenames = result
+            
+            if pattern:
+                try:
+                    filenames = [f for f in filenames if re.search(pattern, f)]
+                except re.error:
+                    pass
+            
+            for filename in filenames:
+                label_file = f"{osp.splitext(filename)[0]}.json"
+                if self.output_dir:
+                    label_file_without_path = osp.basename(label_file)
+                    label_file = osp.join(self.output_dir, label_file_without_path)
+                item = QtWidgets.QListWidgetItem(filename)
+                item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                if QtCore.QFile.exists(label_file) and LabelFile.is_label_file(label_file):
+                    item.setCheckState(Qt.Checked)
+                else:
+                    item.setCheckState(Qt.Unchecked)
+                self.fileListWidget.addItem(item)
 
     def _update_status_stats(self, mouse_pos: QtCore.QPointF) -> None:
         stats: list[str] = []
@@ -2247,19 +2770,50 @@ class MainWindow(QtWidgets.QMainWindow):
         stats.append(f"x={mouse_pos.x():6.1f}, y={mouse_pos.y():6.1f}")
         self.status_right.setText(" | ".join(stats))
 
+    def _update_status_stats_right(self, mouse_pos: QtCore.QPointF) -> None:
+        stats: list[str] = []
+        stats.append(f"mode={self.canvas_right.mode.name}")
+        stats.append(f"x={mouse_pos.x():6.1f}, y={mouse_pos.y():6.1f}")
+        self.status_right.setText(" | ".join(stats))
 
-def _scan_image_files(root_dir: str) -> list[str]:
+
+def _scan_image_files(root_dir: str) -> list[str] | tuple[list[str], list[str]]:
     extensions: list[str] = [
         f".{fmt.data().decode().lower()}"
         for fmt in QtGui.QImageReader.supportedImageFormats()
     ]
 
-    images: list[str] = []
-    for root, dirs, files in os.walk(root_dir):
-        for file in files:
+    # Check if left and right subdirectories exist
+    left_dir = osp.join(root_dir, "left")
+    right_dir = osp.join(root_dir, "right")
+    
+    if osp.exists(left_dir) and osp.exists(right_dir):
+        # Dual mode: scan left and right directories separately
+        left_images: list[str] = []
+        right_images: list[str] = []
+        
+        for file in os.listdir(left_dir):
             if file.lower().endswith(tuple(extensions)):
-                relativePath = os.path.normpath(osp.join(root, file))
-                images.append(relativePath)
+                left_images.append(os.path.normpath(osp.join(left_dir, file)))
+        
+        for file in os.listdir(right_dir):
+            if file.lower().endswith(tuple(extensions)):
+                right_images.append(os.path.normpath(osp.join(right_dir, file)))
+        
+        left_images = natsort.os_sorted(left_images)
+        right_images = natsort.os_sorted(right_images)
+        
+        logger.debug("found {:d} left images and {:d} right images in {!r}", 
+                     len(left_images), len(right_images), root_dir)
+        return (left_images, right_images)
+    else:
+        # Standard mode: scan all images in directory
+        images: list[str] = []
+        for root, dirs, files in os.walk(root_dir):
+            for file in files:
+                if file.lower().endswith(tuple(extensions)):
+                    relativePath = os.path.normpath(osp.join(root, file))
+                    images.append(relativePath)
 
-    logger.debug("found {:d} images in {!r}", len(images), root_dir)
-    return natsort.os_sorted(images)
+        logger.debug("found {:d} images in {!r}", len(images), root_dir)
+        return natsort.os_sorted(images)
