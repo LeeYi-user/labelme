@@ -197,6 +197,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._right_images = []
         self._left_group_id_counter = 0
         self._right_group_id_counter = 0
+        self.filename_right = None
+        self.image_right = None
+        self.imageData_right = None
+        self.labelFile_right = None
 
         # Create left canvas
         self.canvas = Canvas(
@@ -1206,6 +1210,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.resetState()
         if self._dual_mode:
             self.canvas_right.resetState()
+            self.filename_right = None
+            self.imageData_right = None
+            self.labelFile_right = None
 
     def currentItem(self):
         items = self.labelList.selectedItems()
@@ -1707,7 +1714,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 if self.output_dir:
                     filename_right = osp.join(self.output_dir, osp.basename(filename_right))
                 imagePath_right = osp.relpath(self.filename_right, osp.dirname(filename_right))
-                imageData_right = LabelFile.load_image_file(self.filename_right) if self._config["store_data"] else None
+                imageData_right = self.imageData_right if self._config["store_data"] else None
                 if osp.dirname(filename_right) and not osp.exists(osp.dirname(filename_right)):
                     os.makedirs(osp.dirname(filename_right))
                 lf_right.save(
@@ -2186,12 +2193,15 @@ class MainWindow(QtWidgets.QMainWindow):
         label_file_right = f"{osp.splitext(filename_right)[0]}.json"
         if self.output_dir:
             label_file_without_path = osp.basename(label_file_right)
-            label_file_right = osp.join(self.output_dir, label_file_without_path)
+            label_file_right = osp.join(self.output_dir, label_file_right)
         
         labelFile_right = None
         if QtCore.QFile.exists(label_file_right) and LabelFile.is_label_file(label_file_right):
             try:
                 labelFile_right = LabelFile(label_file_right)
+                # Use imageData from label file if available
+                if labelFile_right.imageData:
+                    imageData_right = labelFile_right.imageData
             except LabelFileError:
                 pass
         
@@ -2205,6 +2215,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.filename = filename_left
         self.filename_right = filename_right
         self.image_right = image_right
+        self.imageData_right = imageData_right
+        self.labelFile_right = labelFile_right
         
         # Load pixmaps
         self.canvas.loadPixmap(QtGui.QPixmap.fromImage(image_left))
@@ -2242,12 +2254,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.setEnabled(True)
         self.canvas_right.setEnabled(True)
         
-        # Set zoom values
+        # Set zoom values - in dual mode, always fit to window initially
         is_initial_load = not self._zoom_values
-        if self.filename in self._zoom_values:
+        if self.filename in self._zoom_values and not is_initial_load:
             self._zoom_mode = self._zoom_values[self.filename][0]
             self._set_zoom(self._zoom_values[self.filename][1])
-        elif is_initial_load or not self._config["keep_prev_scale"]:
+        else:
+            # Auto-fit to window for new images or initial load
             self._adjust_scale(initial=True)
         
         self._paint_canvas()
@@ -2305,6 +2318,11 @@ class MainWindow(QtWidgets.QMainWindow):
         e = 2.0  # So that no scrollbars are generated.
         w1 = self.centralWidget().width() - e
         h1 = self.centralWidget().height() - e
+        
+        if self._dual_mode:
+            # In dual mode, each canvas gets half the width (minus splitter)
+            w1 = (w1 - 10) / 2  # 10px for splitter
+        
         a1 = w1 / h1
         # Calculate a new scale value based on the pixmap's aspect ratio.
         w2 = self.canvas.pixmap.width() - 0.0
@@ -2315,6 +2333,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def scaleFitWidth(self):
         # The epsilon does not seem to work too well here.
         w = self.centralWidget().width() - 2.0
+        
+        if self._dual_mode:
+            # In dual mode, each canvas gets half the width (minus splitter)
+            w = (w - 10) / 2  # 10px for splitter
+        
         return w / self.canvas.pixmap.width()
 
     def enableSaveImageWithData(self, enabled):
