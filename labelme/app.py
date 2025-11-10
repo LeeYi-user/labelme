@@ -1499,7 +1499,11 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _update_shape_color(self, shape):
-        r, g, b = self._get_rgb_by_label(shape.label)
+        # Prioritize group_id for color assignment
+        if shape.group_id is not None:
+            r, g, b = self._get_rgb_by_group_id(shape.group_id)
+        else:
+            r, g, b = self._get_rgb_by_label(shape.label)
         shape.line_color = QtGui.QColor(r, g, b)
         shape.vertex_fill_color = QtGui.QColor(r, g, b)
         shape.hvertex_fill_color = QtGui.QColor(255, 255, 255)
@@ -1541,6 +1545,23 @@ class MainWindow(QtWidgets.QMainWindow):
         elif self._config["default_shape_color"]:
             return self._config["default_shape_color"]
         return (0, 255, 0)
+
+    def _get_rgb_by_group_id(self, group_id: int) -> tuple[int, int, int]:
+        """Get RGB color based on group_id.
+        
+        Args:
+            group_id: The group ID of the shape
+            
+        Returns:
+            RGB tuple (r, g, b) where each value is 0-255
+        """
+        # Use group_id to index into the colormap
+        # Add 1 to skip black color by default
+        label_id = 1 + (group_id % (len(LABEL_COLORMAP) - 1))
+        rgb: tuple[int, int, int] = tuple(
+            LABEL_COLORMAP[label_id].tolist()
+        )
+        return rgb
 
     def remLabels(self, shapes):
         for shape in shapes:
@@ -1757,7 +1778,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setDirty()
 
     def copySelectedShape(self):
-        self._copied_shapes = [s.copy() for s in self.canvas.selectedShapes]
+        if self._dual_mode:
+            # In dual mode, copy from both canvases
+            self._copied_shapes = [s.copy() for s in self.canvas.selectedShapes]
+            self._copied_shapes.extend([s.copy() for s in self.canvas_right.selectedShapes])
+        else:
+            self._copied_shapes = [s.copy() for s in self.canvas.selectedShapes]
         self.actions.paste.setEnabled(len(self._copied_shapes) > 0)
 
     def _label_selection_changed(self) -> None:
@@ -1768,18 +1794,56 @@ class MainWindow(QtWidgets.QMainWindow):
         selected_shapes: list[Shape] = []
         for item in self.labelList.selectedItems():
             selected_shapes.append(item.shape())
-        if selected_shapes:
-            self.canvas.selectShapes(selected_shapes)
+        
+        if self._dual_mode:
+            # In dual mode, select shapes in the appropriate canvas
+            shapes_left = [s for s in selected_shapes if s in self.canvas.shapes]
+            shapes_right = [s for s in selected_shapes if s in self.canvas_right.shapes]
+            
+            if shapes_left:
+                self.canvas.selectShapes(shapes_left)
+            else:
+                self.canvas.deSelectShape()
+                
+            if shapes_right:
+                self.canvas_right.selectShapes(shapes_right)
+            else:
+                self.canvas_right.deSelectShape()
         else:
-            self.canvas.deSelectShape()
+            if selected_shapes:
+                self.canvas.selectShapes(selected_shapes)
+            else:
+                self.canvas.deSelectShape()
 
     def labelItemChanged(self, item):
         shape = item.shape()
-        self.canvas.setShapeVisible(shape, item.checkState() == Qt.Checked)
+        if self._dual_mode:
+            # In dual mode, set visibility in the appropriate canvas
+            if shape in self.canvas.shapes:
+                self.canvas.setShapeVisible(shape, item.checkState() == Qt.Checked)
+            elif shape in self.canvas_right.shapes:
+                self.canvas_right.setShapeVisible(shape, item.checkState() == Qt.Checked)
+        else:
+            self.canvas.setShapeVisible(shape, item.checkState() == Qt.Checked)
 
     def labelOrderChanged(self):
         self.setDirty()
-        self.canvas.loadShapes([item.shape() for item in self.labelList])
+        if self._dual_mode:
+            # In dual mode, reload shapes for each canvas separately
+            # Only reload shapes that belong to each canvas
+            shapes_left = []
+            shapes_right = []
+            for item in self.labelList:
+                shape = item.shape()
+                # Check which canvas contains this shape
+                if shape in self.canvas.shapes:
+                    shapes_left.append(shape)
+                elif shape in self.canvas_right.shapes:
+                    shapes_right.append(shape)
+            self.canvas.loadShapes(shapes_left)
+            self.canvas_right.loadShapes(shapes_right)
+        else:
+            self.canvas.loadShapes([item.shape() for item in self.labelList])
 
     # Callback functions:
 
