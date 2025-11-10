@@ -201,6 +201,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.image_right = None
         self.imageData_right = None
         self.labelFile_right = None
+        self._use_image_data = False  # Whether to use imageData for display
 
         # Create left canvas
         self.canvas = Canvas(
@@ -610,6 +611,15 @@ class MainWindow(QtWidgets.QMainWindow):
             checked=self._config["keep_prev_scale"],
             enabled=True,
         )
+        useImageData = action(
+            self.tr("Use &ImageData for Display"),
+            self.toggleUseImageData,
+            shortcuts["use_image_data"],
+            tip=self.tr("Use imageData from JSON for display instead of image file"),
+            checkable=True,
+            checked=False,
+            enabled=True,
+        )
         fitWindow = action(
             self.tr("&Fit Window"),
             self.setFitWindow,
@@ -737,6 +747,7 @@ class MainWindow(QtWidgets.QMainWindow):
             zoomOut=zoomOut,
             zoomOrg=zoomOrg,
             keepPrevScale=keepPrevScale,
+            useImageData=useImageData,
             fitWindow=fitWindow,
             fitWidth=fitWidth,
             brightnessContrast=brightnessContrast,
@@ -855,6 +866,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 zoomOut,
                 zoomOrg,
                 keepPrevScale,
+                useImageData,
                 None,
                 fitWindow,
                 fitWidth,
@@ -1955,6 +1967,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._config["keep_prev_scale"] = enabled
         self.actions.keepPrevScale.setChecked(enabled)
 
+    def toggleUseImageData(self, enabled):
+        """Toggle between using imageData from JSON or loading from file."""
+        self._use_image_data = enabled
+        self.actions.useImageData.setChecked(enabled)
+        # Reload current image with new setting
+        if self.filename:
+            if self._dual_mode:
+                self._load_file_dual(self.filename)
+            else:
+                self._load_file(self.filename)
+
     def onNewBrightnessContrast(self, qimage):
         self.canvas.loadPixmap(QtGui.QPixmap.fromImage(qimage), clear_shapes=False)
 
@@ -2053,7 +2076,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.show_status_message(self.tr("Error reading %s") % label_file)
                 return False
             assert self.labelFile is not None
+            # Always keep the original imageData from JSON
             self.imageData = self.labelFile.imageData
+            # Use different data for display based on setting
+            if self._use_image_data and self.labelFile.imageData:
+                imageData_for_display = self.labelFile.imageData
+            else:
+                imageData_for_display = LabelFile.load_image_file(filename)
             assert self.labelFile.imagePath
             self.imagePath = osp.join(
                 osp.dirname(label_file),
@@ -2061,12 +2090,13 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._other_data = self.labelFile.otherData
         else:
-            self.imageData = LabelFile.load_image_file(filename)
-            if self.imageData:
+            imageData_for_display = LabelFile.load_image_file(filename)
+            self.imageData = imageData_for_display
+            if imageData_for_display:
                 self.imagePath = filename
             self.labelFile = None
-        assert self.imageData is not None
-        image = QtGui.QImage.fromData(self.imageData)
+        assert imageData_for_display is not None
+        image = QtGui.QImage.fromData(imageData_for_display)
 
         if image.isNull():
             formats = [
@@ -2166,27 +2196,35 @@ class MainWindow(QtWidgets.QMainWindow):
         if QtCore.QFile.exists(label_file_left) and LabelFile.is_label_file(label_file_left):
             try:
                 self.labelFile = LabelFile(label_file_left)
+                # Always keep the original imageData from JSON
                 self.imageData = self.labelFile.imageData
+                # Use different data for display based on setting
+                if self._use_image_data and self.labelFile.imageData:
+                    imageData_left_for_display = self.labelFile.imageData
+                else:
+                    imageData_left_for_display = LabelFile.load_image_file(filename_left)
                 self.imagePath = osp.join(osp.dirname(label_file_left), self.labelFile.imagePath)
                 self._other_data = self.labelFile.otherData
             except LabelFileError as e:
                 logger.warning("Error loading label file: {!r}", e)
-                self.imageData = LabelFile.load_image_file(filename_left)
+                imageData_left_for_display = LabelFile.load_image_file(filename_left)
+                self.imageData = imageData_left_for_display
                 self.imagePath = filename_left
                 self.labelFile = None
         else:
-            self.imageData = LabelFile.load_image_file(filename_left)
+            imageData_left_for_display = LabelFile.load_image_file(filename_left)
+            self.imageData = imageData_left_for_display
             self.imagePath = filename_left
             self.labelFile = None
         
-        image_left = QtGui.QImage.fromData(self.imageData)
+        image_left = QtGui.QImage.fromData(imageData_left_for_display)
         if image_left.isNull():
             self.errorMessage(self.tr("Error opening file"), self.tr("Invalid image: %s") % filename_left)
             return False
         
         # Load right image data
-        imageData_right = LabelFile.load_image_file(filename_right)
-        if not imageData_right:
+        imageData_right_from_file = LabelFile.load_image_file(filename_right)
+        if not imageData_right_from_file:
             self.errorMessage(self.tr("Error opening file"), self.tr("Cannot load: %s") % filename_right)
             return False
         
@@ -2196,16 +2234,23 @@ class MainWindow(QtWidgets.QMainWindow):
             label_file_right = osp.join(self.output_dir, label_file_right)
         
         labelFile_right = None
+        imageData_right_for_display = imageData_right_from_file
         if QtCore.QFile.exists(label_file_right) and LabelFile.is_label_file(label_file_right):
             try:
                 labelFile_right = LabelFile(label_file_right)
-                # Use imageData from label file if available
-                if labelFile_right.imageData:
-                    imageData_right = labelFile_right.imageData
+                # Always keep the original imageData from JSON
+                self.imageData_right = labelFile_right.imageData
+                # Use different data for display based on setting
+                if self._use_image_data and labelFile_right.imageData:
+                    imageData_right_for_display = labelFile_right.imageData
+                else:
+                    imageData_right_for_display = imageData_right_from_file
             except LabelFileError:
-                pass
+                self.imageData_right = imageData_right_from_file
+        else:
+            self.imageData_right = imageData_right_from_file
         
-        image_right = QtGui.QImage.fromData(imageData_right)
+        image_right = QtGui.QImage.fromData(imageData_right_for_display)
         if image_right.isNull():
             self.errorMessage(self.tr("Error opening file"), self.tr("Invalid image: %s") % filename_right)
             return False
@@ -2215,7 +2260,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.filename = filename_left
         self.filename_right = filename_right
         self.image_right = image_right
-        self.imageData_right = imageData_right
         self.labelFile_right = labelFile_right
         
         # Load pixmaps

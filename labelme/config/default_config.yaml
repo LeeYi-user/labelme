@@ -99,6 +99,7 @@ shortcuts:
   zoom_to_original: Ctrl+0
   fit_window: Ctrl+F
   fit_width: Ctrl+Shift+F
+  use_image_data: Ctrl+Space
 
   create_polygon: Ctrl+N
   create_rectangle: Ctrl+R
