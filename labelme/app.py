@@ -2276,6 +2276,7 @@ class MainWindow(QtWidgets.QMainWindow):
         
         # Load shapes for right image
         if labelFile_right:
+            shapes_right = []
             for shape_dict in labelFile_right.shapes:
                 shape = Shape(label=shape_dict["label"], shape_type=shape_dict.get("shape_type", "polygon"))
                 for x, y in shape_dict["points"]:
@@ -2290,9 +2291,11 @@ class MainWindow(QtWidgets.QMainWindow):
                     shape.description = shape_dict["description"]
                 if "flags" in shape_dict:
                     shape.flags = shape_dict["flags"]
-                self.canvas_right.shapes.append(shape)
+                shapes_right.append(shape)
                 # Add to labelList so it's visible
                 self.addLabel(shape)
+            # Properly load shapes into canvas_right to ensure storeShapes is called
+            self.canvas_right.loadShapes(shapes_right, replace=True)
         
         self.setClean()
         self.canvas.setEnabled(True)
