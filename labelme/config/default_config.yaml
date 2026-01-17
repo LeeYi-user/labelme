@@ -1,4 +1,4 @@
-auto_save: false
+auto_save: true
 display_label_popup: true
 store_data: true
 keep_prev: false
@@ -97,16 +97,16 @@ shortcuts:
   zoom_in: [Ctrl++, Ctrl+=]
   zoom_out: Ctrl+-
   zoom_to_original: Ctrl+0
-  fit_window: Ctrl+F
-  fit_width: Ctrl+Shift+F
+  fit_window: null
+  fit_width: null
 
   create_polygon: Ctrl+N
-  create_rectangle: Ctrl+R
+  create_rectangle: null
   create_circle: null
   create_line: null
-  create_point: null
+  create_point: Ctrl+R
   create_linestrip: null
-  edit_polygon: Ctrl+J
+  edit_polygon: Ctrl+E
   delete_polygon: Delete
   duplicate_polygon: Ctrl+D
   copy_polygon: Ctrl+C
@@ -114,8 +114,9 @@ shortcuts:
   undo: Ctrl+Z
   undo_last_point: Ctrl+Z
   add_point_to_edge: Ctrl+Shift+P
-  edit_label: Ctrl+E
+  edit_label: null
   toggle_keep_prev_mode: Ctrl+P
+  toggle_image_display: Ctrl+F
   remove_selected_point: [Meta+H, Backspace]
 
   show_all_polygons: null

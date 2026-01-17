@@ -567,6 +567,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tr("Adjust brightness and contrast"),
             enabled=False,
         )
+        toggleImageDisplay = action(
+            self.tr("Toggle Image Display"),
+            self.toggleImageDisplay,
+            shortcuts["toggle_image_display"],
+            "image",
+            self.tr("Toggle between imageData and original image"),
+            enabled=False,
+        )
         self.zoomMode = self.FIT_WINDOW
         fitWindow.setChecked(Qt.Checked)
         self.scalers = {
@@ -671,6 +679,7 @@ class MainWindow(QtWidgets.QMainWindow):
             fitWindow=fitWindow,
             fitWidth=fitWidth,
             brightnessContrast=brightnessContrast,
+            toggleImageDisplay=toggleImageDisplay,
             openNextImg=openNextImg,
             openPrevImg=openPrevImg,
         )
@@ -708,6 +717,7 @@ class MainWindow(QtWidgets.QMainWindow):
             createAiMaskMode,
             editMode,
             brightnessContrast,
+            toggleImageDisplay,
         )
         # menu shown at right click
         self.context_menu_actions = (
@@ -800,6 +810,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 None,
                 brightnessContrast,
                 self.actions.toggle_keep_prev_brightness_contrast,
+                None,
+                self.actions.toggleImageDisplay,
             ),
         )
 
@@ -913,6 +925,7 @@ class MainWindow(QtWidgets.QMainWindow):
             Qt.Horizontal: {},
             Qt.Vertical: {},
         }  # key=filename, value=scroll_value
+        self.show_original_image = False  # Toggle state for image display
 
         if filename is not None and osp.isdir(filename):
             self.importDirImages(filename, load=False)
@@ -1107,6 +1120,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.imageData = None
         self.labelFile = None
         self.otherData = None
+        self.show_original_image = False
         self.canvas.resetState()
 
     def currentItem(self):
@@ -1699,6 +1713,46 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.brightnessContrast_values[self.filename] = (brightness, contrast)
 
+    def toggleImageDisplay(self, value=None):
+        """Toggle between displaying imageData and original image file."""
+        if not self.filename or not self.imagePath:
+            return
+        
+        # Toggle the state
+        self.show_original_image = not self.show_original_image
+        
+        # Load the appropriate image data
+        if self.show_original_image and self.imagePath:
+            # Load from original image file
+            image_data = LabelFile.load_image_file(self.imagePath)
+            if not image_data:
+                # Fall back to imageData if original file cannot be loaded
+                image_data = self.imageData
+                self.show_original_image = False
+                self.show_status_message(self.tr("Original image not found, using imageData"))
+                return
+        else:
+            # Use imageData from JSON or current imageData
+            image_data = self.imageData
+        
+        # Create QImage from the loaded data
+        image = QtGui.QImage.fromData(image_data)
+        
+        if image.isNull():
+            self.show_status_message(self.tr("Failed to load image"))
+            return
+        
+        # Update the display
+        self.image = image
+        self.canvas.loadPixmap(QtGui.QPixmap.fromImage(image), clear_shapes=False)
+        self.paintCanvas()
+        
+        # Show status message
+        if self.show_original_image:
+            self.show_status_message(self.tr("Switched to original image"))
+        else:
+            self.show_status_message(self.tr("Switched to imageData"))
+
     def togglePolygons(self, value):
         flag = value
         for item in self.labelList:
@@ -1760,7 +1814,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.imagePath = filename
             self.labelFile = None
         assert self.imageData is not None
-        image = QtGui.QImage.fromData(self.imageData)
+        
+        # Check if we should display the original image instead of imageData
+        if self.show_original_image and self.imagePath:
+            # Load the original image file
+            original_image_data = LabelFile.load_image_file(self.imagePath)
+            if original_image_data:
+                image = QtGui.QImage.fromData(original_image_data)
+            else:
+                # Fall back to imageData if original file cannot be loaded
+                image = QtGui.QImage.fromData(self.imageData)
+        else:
+            # Use imageData from JSON
+            image = QtGui.QImage.fromData(self.imageData)
 
         if image.isNull():
             formats = [
